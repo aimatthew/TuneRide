@@ -12,7 +12,11 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.activity.viewModels
 import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.getValue
 import androidx.core.content.ContextCompat
+import androidx.core.view.WindowCompat
+import androidx.lifecycle.compose.collectAsStateWithLifecycle
+import pl.rysiek.roadtune.data.ThemeMode
 import pl.rysiek.roadtune.ui.RoadTuneApp
 import pl.rysiek.roadtune.ui.RoadTuneTheme
 
@@ -26,7 +30,15 @@ class MainActivity : ComponentActivity() {
         receiveUpdateIntent(intent)
 
         setContent {
-            RoadTuneTheme {
+            val appSettings by viewModel.settings.collectAsStateWithLifecycle()
+            LaunchedEffect(appSettings.themeMode) {
+                val lightBars = appSettings.themeMode == ThemeMode.LIGHT
+                WindowCompat.getInsetsController(window, window.decorView).apply {
+                    isAppearanceLightStatusBars = lightBars
+                    isAppearanceLightNavigationBars = lightBars
+                }
+            }
+            RoadTuneTheme(themeMode = appSettings.themeMode) {
                 val notificationPermission = rememberLauncherForActivityResult(
                     ActivityResultContracts.RequestPermission()
                 ) { }

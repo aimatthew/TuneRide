@@ -31,15 +31,18 @@ import androidx.compose.material.icons.filled.Download
 import androidx.compose.material.icons.filled.ErrorOutline
 import androidx.compose.material.icons.filled.FolderOpen
 import androidx.compose.material.icons.filled.History
+import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Schedule
-import androidx.compose.material.icons.filled.SystemUpdate
+import androidx.compose.material.icons.filled.Settings
+import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
+import androidx.compose.material3.CircularProgressIndicator
 import androidx.compose.material3.ExperimentalMaterial3Api
 import androidx.compose.material3.FilterChip
 import androidx.compose.material3.HorizontalDivider
@@ -49,6 +52,7 @@ import androidx.compose.material3.LinearProgressIndicator
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.NavigationBar
 import androidx.compose.material3.NavigationBarItem
+import androidx.compose.material3.OutlinedButton
 import androidx.compose.material3.OutlinedTextField
 import androidx.compose.material3.Scaffold
 import androidx.compose.material3.SnackbarHost
@@ -79,12 +83,15 @@ import pl.rysiek.roadtune.MainViewModel
 import pl.rysiek.roadtune.data.AppSettings
 import pl.rysiek.roadtune.data.DownloadEntity
 import pl.rysiek.roadtune.data.DownloadState
+import pl.rysiek.roadtune.download.DownloadMode
+import pl.rysiek.roadtune.download.PlaylistPrompt
+import pl.rysiek.roadtune.preview.PreviewState
 import java.time.Instant
 import java.time.ZoneId
 import java.time.format.DateTimeFormatter
 import java.util.Locale
 
-private enum class AppTab { DOWNLOAD, HISTORY, UPDATES }
+private enum class AppTab { DOWNLOAD, HISTORY, SETTINGS }
 
 @OptIn(ExperimentalMaterial3Api::class)
 @Composable
@@ -92,6 +99,10 @@ fun RoadTuneApp(viewModel: MainViewModel) {
     val history by viewModel.history.collectAsStateWithLifecycle()
     val settings by viewModel.settings.collectAsStateWithLifecycle()
     val url by viewModel.url.collectAsStateWithLifecycle()
+    val previewState by viewModel.previewState.collectAsStateWithLifecycle()
+    val downloadMode by viewModel.downloadMode.collectAsStateWithLifecycle()
+    val playlistPrompt by viewModel.playlistPrompt.collectAsStateWithLifecycle()
+    val isPreparingPlaylist by viewModel.isPreparingPlaylist.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     val openUpdates by viewModel.openUpdates.collectAsStateWithLifecycle()
@@ -108,9 +119,17 @@ fun RoadTuneApp(viewModel: MainViewModel) {
 
     LaunchedEffect(openUpdates) {
         if (openUpdates) {
-            selectedTab = AppTab.UPDATES.ordinal
-            viewModel.updatesScreenOpened()
+            selectedTab = AppTab.SETTINGS.ordinal
         }
+    }
+
+    playlistPrompt?.let {
+        PlaylistChoiceDialog(
+            prompt = it,
+            onSingleTrack = viewModel::selectSingleTrack,
+            onWholePlaylist = viewModel::selectWholePlaylist,
+            onCancel = viewModel::cancelPlaylistSelection
+        )
     }
 
     Scaffold(
@@ -158,10 +177,10 @@ fun RoadTuneApp(viewModel: MainViewModel) {
                     label = { Text("Historia") }
                 )
                 NavigationBarItem(
-                    selected = currentTab == AppTab.UPDATES,
-                    onClick = { selectedTab = AppTab.UPDATES.ordinal },
-                    icon = { Icon(Icons.Default.SystemUpdate, null) },
-                    label = { Text("Aktualizacje") }
+                    selected = currentTab == AppTab.SETTINGS,
+                    onClick = { selectedTab = AppTab.SETTINGS.ordinal },
+                    icon = { Icon(Icons.Default.Settings, null) },
+                    label = { Text("Ustawienia") }
                 )
             }
         },
@@ -171,9 +190,13 @@ fun RoadTuneApp(viewModel: MainViewModel) {
             AppTab.DOWNLOAD -> DownloadScreen(
                 padding = padding,
                 url = url,
+                previewState = previewState,
+                downloadMode = downloadMode,
+                isPreparingPlaylist = isPreparingPlaylist,
                 settings = settings,
-                activeItems = history.filter { it.state.isActive() },
+                downloads = history,
                 onUrlChange = viewModel::setUrl,
+                onLoadPreview = viewModel::loadPreview,
                 onBitrateChange = viewModel::setBitrate,
                 onFolderChange = viewModel::setFolder,
                 onDownload = viewModel::startDownload
@@ -186,12 +209,18 @@ fun RoadTuneApp(viewModel: MainViewModel) {
                 onClear = viewModel::clearHistory
             )
 
-            AppTab.UPDATES -> UpdateScreen(
+            AppTab.SETTINGS -> SettingsScreen(
                 padding = padding,
-                state = updateState,
-                onCheck = viewModel::checkForUpdates,
-                onDownload = viewModel::downloadUpdate,
-                onInstall = viewModel::installDownloadedUpdate
+                themeMode = settings.themeMode,
+                maxConcurrentDownloads = settings.maxConcurrentDownloads,
+                updateState = updateState,
+                openUpdatesInitially = openUpdates,
+                onOpenUpdatesConsumed = viewModel::updatesScreenOpened,
+                onThemeChange = viewModel::setThemeMode,
+                onMaxConcurrentDownloadsChange = viewModel::setMaxConcurrentDownloads,
+                onCheckUpdate = viewModel::checkForUpdates,
+                onDownloadUpdate = viewModel::downloadUpdate,
+                onInstallUpdate = viewModel::installDownloadedUpdate
             )
         }
     }
@@ -201,9 +230,13 @@ fun RoadTuneApp(viewModel: MainViewModel) {
 private fun DownloadScreen(
     padding: PaddingValues,
     url: String,
+    previewState: PreviewState,
+    downloadMode: DownloadMode,
+    isPreparingPlaylist: Boolean,
     settings: AppSettings,
-    activeItems: List<DownloadEntity>,
+    downloads: List<DownloadEntity>,
     onUrlChange: (String) -> Unit,
+    onLoadPreview: () -> Unit,
     onBitrateChange: (Int) -> Unit,
     onFolderChange: (Uri) -> Unit,
     onDownload: () -> Unit
@@ -221,6 +254,15 @@ private fun DownloadScreen(
             }
             onFolderChange(it)
         }
+    }
+    val activePlaylistGroups = downloads
+        .filter { it.playlistId != null }
+        .groupBy { it.playlistId.orEmpty() }
+        .filterValues { group -> group.any { it.state.isActive() } }
+        .values
+        .sortedByDescending { group -> group.maxOfOrNull { it.createdAt } ?: 0L }
+    val activeSingles = downloads.filter {
+        it.playlistId == null && it.state.isActive()
     }
 
     LazyColumn(
@@ -252,6 +294,31 @@ private fun DownloadScreen(
                         singleLine = true,
                         shape = RoundedCornerShape(16.dp)
                     )
+                    Spacer(Modifier.height(10.dp))
+                    OutlinedButton(
+                        onClick = onLoadPreview,
+                        enabled = url.isNotBlank() &&
+                            previewState !is PreviewState.Loading &&
+                            downloadMode == DownloadMode.SINGLE,
+                        modifier = Modifier
+                            .fillMaxWidth()
+                            .height(50.dp),
+                        shape = RoundedCornerShape(16.dp)
+                    ) {
+                        Icon(Icons.Default.Headphones, null)
+                        Spacer(Modifier.width(9.dp))
+                        Text(
+                            if (downloadMode == DownloadMode.PLAYLIST) {
+                                "Odsłuch tylko pojedynczego utworu"
+                            } else if (previewState is PreviewState.Loading) {
+                                "Przygotowuję odsłuch…"
+                            } else {
+                                "Sprawdź i odsłuchaj"
+                            },
+                            fontWeight = FontWeight.SemiBold
+                        )
+                    }
+                    AudioPreviewCard(previewState, Modifier.padding(top = 10.dp))
                     Spacer(Modifier.height(18.dp))
                     Text(
                         "Jakość MP3",
@@ -281,7 +348,7 @@ private fun DownloadScreen(
                     Spacer(Modifier.height(18.dp))
                     Button(
                         onClick = onDownload,
-                        enabled = url.isNotBlank(),
+                        enabled = url.isNotBlank() && !isPreparingPlaylist,
                         modifier = Modifier
                             .fillMaxWidth()
                             .height(54.dp),
@@ -289,12 +356,40 @@ private fun DownloadScreen(
                     ) {
                         Icon(Icons.Default.Download, null)
                         Spacer(Modifier.width(10.dp))
-                        Text("Pobierz jako MP3", fontWeight = FontWeight.Bold)
+                        Text(
+                            if (isPreparingPlaylist) {
+                                "Odczytuję utwory i miniatury…"
+                            } else if (downloadMode == DownloadMode.PLAYLIST) {
+                                "Pobierz całą playlistę jako MP3"
+                            } else {
+                                "Pobierz jako MP3"
+                            },
+                            fontWeight = FontWeight.Bold
+                        )
                     }
                 }
             }
         }
-        if (activeItems.isNotEmpty()) {
+        if (isPreparingPlaylist) {
+            item {
+                Card(
+                    shape = RoundedCornerShape(18.dp),
+                    colors = CardDefaults.cardColors(
+                        containerColor = MaterialTheme.colorScheme.surface
+                    )
+                ) {
+                    Row(
+                        modifier = Modifier.padding(16.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        CircularProgressIndicator(Modifier.size(26.dp), strokeWidth = 3.dp)
+                        Spacer(Modifier.width(12.dp))
+                        Text("Odczytuję listę utworów, tytuły i miniatury…")
+                    }
+                }
+            }
+        }
+        if (activePlaylistGroups.isNotEmpty() || activeSingles.isNotEmpty()) {
             item {
                 Text(
                     "Aktualne zadania",
@@ -302,7 +397,10 @@ private fun DownloadScreen(
                     fontWeight = FontWeight.Bold
                 )
             }
-            items(activeItems, key = { it.id }) { DownloadProgressCard(it) }
+            items(activePlaylistGroups, key = { it.first().playlistId.orEmpty() }) { group ->
+                PlaylistProgressCard(group)
+            }
+            items(activeSingles, key = { it.id }) { DownloadProgressCard(it) }
         }
         item {
             Text(
@@ -316,9 +414,48 @@ private fun DownloadScreen(
 }
 
 @Composable
+private fun PlaylistChoiceDialog(
+    prompt: PlaylistPrompt,
+    onSingleTrack: () -> Unit,
+    onWholePlaylist: () -> Unit,
+    onCancel: () -> Unit
+) {
+    AlertDialog(
+        onDismissRequest = onCancel,
+        title = { Text("Wykryto playlistę") },
+        text = {
+            Text(
+                if (prompt.canSelectSingleTrack) {
+                    "Ten link zawiera konkretny utwór oraz playlistę. Co chcesz pobrać?"
+                } else {
+                    "Ten link prowadzi do całej playlisty i nie wskazuje jednego utworu."
+                }
+            )
+        },
+        confirmButton = {
+            Button(onClick = onWholePlaylist) {
+                Text("Cała playlista")
+            }
+        },
+        dismissButton = {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                TextButton(onClick = onCancel) { Text("Anuluj") }
+                if (prompt.canSelectSingleTrack) {
+                    TextButton(onClick = onSingleTrack) { Text("Tylko ten utwór") }
+                }
+            }
+        }
+    )
+}
+
+@Composable
 private fun HeroCard() {
     val gradient = Brush.linearGradient(
-        listOf(Color(0xFF2638C4), Color(0xFF526DFF), Color(0xFF00A884))
+        listOf(
+            MaterialTheme.colorScheme.primaryContainer,
+            MaterialTheme.colorScheme.primary,
+            MaterialTheme.colorScheme.secondary
+        )
     )
     Card(shape = RoundedCornerShape(26.dp)) {
         Row(
@@ -391,6 +528,167 @@ private fun FolderCard(folderName: String, onClick: () -> Unit) {
             )
         }
         Icon(Icons.Default.MoreVert, null, tint = MaterialTheme.colorScheme.onSurfaceVariant)
+    }
+}
+
+@Composable
+private fun PlaylistProgressCard(items: List<DownloadEntity>) {
+    val ordered = items.sortedBy { it.playlistPosition ?: Int.MAX_VALUE }
+    val total = ordered.firstOrNull()?.playlistTotal ?: ordered.size
+    val completed = ordered.count { it.state == DownloadState.COMPLETED }
+    val failed = ordered.count { it.state == DownloadState.FAILED }
+    val remaining = (total - completed - failed).coerceAtLeast(0)
+    val active = ordered.filter {
+        it.state in setOf(
+            DownloadState.PREPARING,
+            DownloadState.DOWNLOADING,
+            DownloadState.COPYING
+        )
+    }
+    val queued = ordered.count { it.state == DownloadState.QUEUED }
+    val progress = if (total == 0) 0f else {
+        ordered.sumOf { item ->
+            when (item.state) {
+                DownloadState.COMPLETED, DownloadState.FAILED -> 100
+                else -> item.progress
+            }
+        }.toFloat() / (total * 100f)
+    }.coerceIn(0f, 1f)
+
+    Card(
+        shape = RoundedCornerShape(20.dp),
+        colors = CardDefaults.cardColors(containerColor = MaterialTheme.colorScheme.surface)
+    ) {
+        Column(Modifier.padding(16.dp)) {
+            Row(verticalAlignment = Alignment.CenterVertically) {
+                Box(
+                    modifier = Modifier
+                        .size(44.dp)
+                        .clip(RoundedCornerShape(12.dp))
+                        .background(MaterialTheme.colorScheme.primaryContainer),
+                    contentAlignment = Alignment.Center
+                ) {
+                    Icon(
+                        Icons.Default.LibraryMusic,
+                        null,
+                        tint = MaterialTheme.colorScheme.primary
+                    )
+                }
+                Spacer(Modifier.width(12.dp))
+                Column(Modifier.weight(1f)) {
+                    Text(
+                        ordered.firstOrNull()?.playlistTitle ?: "Playlista YouTube",
+                        fontWeight = FontWeight.Bold,
+                        maxLines = 2,
+                        overflow = TextOverflow.Ellipsis
+                    )
+                    Text(
+                        "Pobrano $completed z $total • Pozostało $remaining",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+                Text(
+                    "${(progress * 100).toInt()}%",
+                    style = MaterialTheme.typography.labelLarge
+                )
+            }
+            Spacer(Modifier.height(12.dp))
+            LinearProgressIndicator(
+                progress = { progress },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(CircleShape)
+            )
+            if (failed > 0) {
+                Spacer(Modifier.height(7.dp))
+                Text(
+                    "Nieudane: $failed",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.error
+                )
+            }
+            Spacer(Modifier.height(14.dp))
+            Text(
+                if (active.size > 1) "Pobierane teraz (${active.size})" else "Pobierane teraz",
+                style = MaterialTheme.typography.labelLarge,
+                fontWeight = FontWeight.SemiBold
+            )
+            Spacer(Modifier.height(8.dp))
+            if (active.isEmpty()) {
+                Text(
+                    "Oczekiwanie na rozpoczęcie • w kolejce: $queued",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            } else {
+                active.forEach { item ->
+                    PlaylistCurrentTrack(item)
+                    Spacer(Modifier.height(8.dp))
+                }
+                if (queued > 0) {
+                    Text(
+                        "W kolejce: $queued",
+                        style = MaterialTheme.typography.bodySmall,
+                        color = MaterialTheme.colorScheme.onSurfaceVariant
+                    )
+                }
+            }
+        }
+    }
+}
+
+@Composable
+private fun PlaylistCurrentTrack(item: DownloadEntity) {
+    Row(
+        modifier = Modifier
+            .fillMaxWidth()
+            .clip(RoundedCornerShape(14.dp))
+            .background(MaterialTheme.colorScheme.surfaceVariant)
+            .padding(9.dp),
+        verticalAlignment = Alignment.CenterVertically
+    ) {
+        if (!item.thumbnailUrl.isNullOrBlank()) {
+            AsyncImage(
+                model = item.thumbnailUrl,
+                contentDescription = null,
+                contentScale = ContentScale.Crop,
+                modifier = Modifier
+                    .size(50.dp)
+                    .clip(RoundedCornerShape(10.dp))
+            )
+        } else {
+            Box(
+                modifier = Modifier
+                    .size(50.dp)
+                    .clip(RoundedCornerShape(10.dp))
+                    .background(MaterialTheme.colorScheme.primaryContainer),
+                contentAlignment = Alignment.Center
+            ) {
+                Icon(Icons.Default.MusicNote, null, tint = MaterialTheme.colorScheme.primary)
+            }
+        }
+        Spacer(Modifier.width(10.dp))
+        Column(Modifier.weight(1f)) {
+            Text(
+                "#${item.playlistPosition ?: "–"} ${item.title}",
+                fontWeight = FontWeight.SemiBold,
+                maxLines = 2,
+                overflow = TextOverflow.Ellipsis
+            )
+            Text(
+                "${item.state.label()} • ${item.progress}%",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant
+            )
+            Spacer(Modifier.height(4.dp))
+            LinearProgressIndicator(
+                progress = { item.progress / 100f },
+                modifier = Modifier
+                    .fillMaxWidth()
+                    .clip(CircleShape)
+            )
+        }
     }
 }
 

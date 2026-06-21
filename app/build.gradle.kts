@@ -88,6 +88,7 @@ dependencies {
     implementation("androidx.work:work-runtime-ktx:2.10.0")
     implementation("androidx.documentfile:documentfile:1.0.1")
     implementation("io.coil-kt:coil-compose:2.7.0")
+    implementation("androidx.media3:media3-exoplayer:1.6.1")
 
     val youtubeDlVersion = "0.18.1"
     implementation("io.github.junkfood02.youtubedl-android:library:$youtubeDlVersion")

@@ -15,6 +15,9 @@ interface DownloadDao {
     @Insert(onConflict = OnConflictStrategy.REPLACE)
     suspend fun insert(item: DownloadEntity)
 
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(items: List<DownloadEntity>)
+
     @Query("SELECT * FROM downloads WHERE id = :id LIMIT 1")
     suspend fun get(id: String): DownloadEntity?
 

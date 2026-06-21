@@ -26,6 +26,10 @@ import pl.rysiek.roadtune.RoadTuneApplication
 import pl.rysiek.roadtune.data.DownloadState
 import java.io.File
 import java.io.FileInputStream
+import java.util.concurrent.ConcurrentHashMap
+import kotlinx.coroutines.sync.Mutex
+import kotlinx.coroutines.sync.Semaphore
+import kotlinx.coroutines.sync.withLock
 
 class DownloadWorker(
     appContext: Context,
@@ -37,24 +41,50 @@ class DownloadWorker(
     private val sourceUrl = inputData.getString(KEY_URL).orEmpty()
     private val bitrate = inputData.getInt(KEY_BITRATE, 192)
     private val folderUri = inputData.getString(KEY_FOLDER_URI)
+    private val downloadPlaylist = inputData.getBoolean(KEY_PLAYLIST, false)
+    private val playlistGroupId = inputData.getString(KEY_PLAYLIST_GROUP)
+    private val maxConcurrent = inputData.getInt(KEY_MAX_CONCURRENT, 1).coerceIn(1, 4)
+    private val filePrefix = inputData.getString(KEY_FILE_PREFIX)
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
-        if (itemId.isBlank() || sourceUrl.isBlank()) return@withContext Result.failure()
+        val gate = playlistGroupId?.takeIf { it.isNotBlank() }?.let { groupId ->
+            playlistGates.computeIfAbsent(groupId) { Semaphore(maxConcurrent) }
+        }
+        if (gate == null) {
+            return@withContext performDownload()
+        }
+
+        gate.acquire()
+        try {
+            performDownload()
+        } finally {
+            gate.release()
+        }
+    }
+
+    private suspend fun performDownload(): Result {
+        if (itemId.isBlank() || sourceUrl.isBlank()) return Result.failure()
 
         setForeground(createForegroundInfo(0, "Przygotowywanie…"))
         dao.updateProgress(itemId, DownloadState.PREPARING, 0)
         val tempDirectory = File(applicationContext.cacheDir, "downloads/$itemId")
 
-        try {
+        return try {
             tempDirectory.mkdirs()
             updateYoutubeDlIfNeeded()
 
-            val info = YoutubeDL.getInstance().getInfo(sourceUrl)
-            val title = info.title?.trim().takeUnless { it.isNullOrBlank() } ?: "Pobrany utwór"
-            dao.updateMetadata(itemId, title, info.uploader, info.thumbnail)
+            val title = if (downloadPlaylist) {
+                "Playlista YouTube"
+            } else {
+                val info = YoutubeDL.getInstance().getInfo(sourceUrl)
+                val trackTitle = info.title?.trim().takeUnless { it.isNullOrBlank() }
+                    ?: "Pobrany utwór"
+                dao.updateMetadata(itemId, trackTitle, info.uploader, info.thumbnail)
+                trackTitle
+            }
 
             val request = YoutubeDLRequest(sourceUrl).apply {
-                addOption("--no-playlist")
+                addOption(if (downloadPlaylist) "--yes-playlist" else "--no-playlist")
                 addOption("--no-mtime")
                 addOption("--extract-audio")
                 addOption("--audio-format", "mp3")
@@ -64,7 +94,14 @@ class DownloadWorker(
                 addOption("-f", "bestaudio[ext=m4a]/bestaudio")
                 addOption(
                     "-o",
-                    File(tempDirectory, "%(title).180B [%(id)s].%(ext)s").absolutePath
+                    File(
+                        tempDirectory,
+                        if (downloadPlaylist) {
+                            "%(playlist_index)03d - %(title).165B [%(id)s].%(ext)s"
+                        } else {
+                            "${filePrefix?.let { "$it - " }.orEmpty()}%(title).180B [%(id)s].%(ext)s"
+                        }
+                    ).absolutePath
                 )
             }
 
@@ -84,25 +121,38 @@ class DownloadWorker(
                 }
             }
 
-            val mp3File = tempDirectory.walkTopDown()
-                .firstOrNull { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
-                ?: error("Konwersja zakończyła się bez utworzenia pliku MP3")
+            val mp3Files = tempDirectory.walkTopDown()
+                .filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
+                .sortedBy { it.name }
+                .toList()
+            if (mp3Files.isEmpty()) {
+                error("Konwersja zakończyła się bez utworzenia pliku MP3")
+            }
 
             dao.updateProgress(itemId, DownloadState.COPYING, 99)
-            val destination = if (!folderUri.isNullOrBlank()) {
-                copyToSelectedFolder(mp3File, Uri.parse(folderUri))
-            } else {
-                copyToDefaultMusicFolder(mp3File)
+            val destinations = mp3Files.map { mp3File ->
+                if (!folderUri.isNullOrBlank()) {
+                    copyToSelectedFolder(mp3File, Uri.parse(folderUri))
+                } else {
+                    copyToDefaultMusicFolder(mp3File)
+                }
+            }
+            val firstDestination = destinations.first()
+            val historyName = if (downloadPlaylist) {
+                "${destinations.size} utworów z playlisty"
+            } else firstDestination.fileName
+            if (downloadPlaylist) {
+                dao.updateMetadata(itemId, "Playlista • ${destinations.size} utworów", null, null)
             }
 
             dao.markCompleted(
                 id = itemId,
-                fileName = destination.fileName,
-                uri = destination.uri.toString(),
+                fileName = historyName,
+                uri = firstDestination.uri.toString(),
                 completedAt = System.currentTimeMillis()
             )
             tempDirectory.deleteRecursively()
-            Result.success(workDataOf(KEY_OUTPUT_URI to destination.uri.toString()))
+            Result.success(workDataOf(KEY_OUTPUT_URI to firstDestination.uri.toString()))
         } catch (cancelled: CancellationException) {
             tempDirectory.deleteRecursively()
             throw cancelled
@@ -117,14 +167,15 @@ class DownloadWorker(
     override suspend fun getForegroundInfo(): ForegroundInfo =
         createForegroundInfo(0, "Przygotowywanie…")
 
-    private fun updateYoutubeDlIfNeeded() {
-        val preferences = applicationContext.getSharedPreferences(
+    private suspend fun updateYoutubeDlIfNeeded() {
+        engineUpdateMutex.withLock {
+            val preferences = applicationContext.getSharedPreferences(
             "roadtune_engine_updates",
             Context.MODE_PRIVATE
         )
         val now = System.currentTimeMillis()
         val lastUpdate = preferences.getLong("last_update", 0L)
-        if (now - lastUpdate < 12 * 60 * 60 * 1000L) return
+        if (now - lastUpdate < 12 * 60 * 60 * 1000L) return@withLock
 
         runCatching {
             YoutubeDL.getInstance().updateYoutubeDL(
@@ -133,6 +184,7 @@ class DownloadWorker(
             )
         }.onSuccess {
             preferences.edit().putLong("last_update", now).apply()
+        }
         }
     }
 
@@ -234,16 +286,36 @@ class DownloadWorker(
         const val KEY_URL = "source_url"
         const val KEY_BITRATE = "bitrate"
         const val KEY_FOLDER_URI = "folder_uri"
+        const val KEY_PLAYLIST = "download_playlist"
+        const val KEY_PLAYLIST_GROUP = "playlist_group"
+        const val KEY_MAX_CONCURRENT = "max_concurrent"
+        const val KEY_FILE_PREFIX = "file_prefix"
         const val KEY_PROGRESS = "progress"
         const val KEY_STATUS = "status"
         const val KEY_OUTPUT_URI = "output_uri"
         const val KEY_ERROR = "error"
 
-        fun input(id: String, url: String, bitrate: Int, folderUri: String?): Data = workDataOf(
-            KEY_ID to id,
-            KEY_URL to url,
-            KEY_BITRATE to bitrate,
-            KEY_FOLDER_URI to folderUri
-        )
+        fun input(
+            id: String,
+            url: String,
+            bitrate: Int,
+            folderUri: String?,
+            downloadPlaylist: Boolean,
+            playlistGroupId: String?,
+            maxConcurrent: Int,
+            filePrefix: String?
+        ): Data = workDataOf(
+                KEY_ID to id,
+                KEY_URL to url,
+                KEY_BITRATE to bitrate,
+                KEY_FOLDER_URI to folderUri,
+                KEY_PLAYLIST to downloadPlaylist,
+                KEY_PLAYLIST_GROUP to playlistGroupId,
+                KEY_MAX_CONCURRENT to maxConcurrent.coerceIn(1, 4),
+                KEY_FILE_PREFIX to filePrefix
+            )
+
+        private val playlistGates = ConcurrentHashMap<String, Semaphore>()
+        private val engineUpdateMutex = Mutex()
     }
 }
