@@ -206,6 +206,21 @@ private fun AppearanceSettings(
         }
         item {
             ThemeOption(
+                title = "Nocny",
+                description = "Czarne tło, grafitowe karty i spokojne niebiesko-fioletowe akcenty",
+                selected = selected == ThemeMode.MIDNIGHT,
+                iconColor = Color(0xFF7B86FF),
+                previewColors = listOf(
+                    Color(0xFF0F1016),
+                    Color(0xFF292A33),
+                    Color(0xFF7B86FF)
+                ),
+                icon = { Icon(Icons.Default.DarkMode, null, tint = Color(0xFF7B86FF)) },
+                onClick = { onThemeChange(ThemeMode.MIDNIGHT) }
+            )
+        }
+        item {
+            ThemeOption(
                 title = "Ciemnoczerwony",
                 description = "Ciemne tło z bordowymi i czerwonymi akcentami",
                 selected = selected == ThemeMode.DARK_RED,

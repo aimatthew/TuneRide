@@ -5,6 +5,7 @@ import android.net.Uri
 import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.animation.AnimatedVisibility
+import androidx.compose.foundation.Image
 import androidx.compose.foundation.background
 import androidx.compose.foundation.clickable
 import androidx.compose.foundation.layout.Arrangement
@@ -74,12 +75,14 @@ import androidx.compose.ui.graphics.Brush
 import androidx.compose.ui.graphics.Color
 import androidx.compose.ui.layout.ContentScale
 import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.res.painterResource
 import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.style.TextOverflow
 import androidx.compose.ui.unit.dp
 import androidx.lifecycle.compose.collectAsStateWithLifecycle
 import coil.compose.AsyncImage
 import pl.rysiek.roadtune.MainViewModel
+import pl.rysiek.roadtune.R
 import pl.rysiek.roadtune.data.AppSettings
 import pl.rysiek.roadtune.data.DownloadEntity
 import pl.rysiek.roadtune.data.DownloadState
@@ -137,15 +140,14 @@ fun RoadTuneApp(viewModel: MainViewModel) {
             TopAppBar(
                 title = {
                     Row(verticalAlignment = Alignment.CenterVertically) {
-                        Box(
+                        Image(
+                            painter = painterResource(R.drawable.tuneride_icon),
+                            contentDescription = "Ikona TuneRide",
                             modifier = Modifier
                                 .size(38.dp)
-                                .clip(RoundedCornerShape(12.dp))
-                                .background(MaterialTheme.colorScheme.primary),
-                            contentAlignment = Alignment.Center
-                        ) {
-                            Icon(Icons.Default.MusicNote, null, tint = Color.White)
-                        }
+                                .clip(RoundedCornerShape(12.dp)),
+                            contentScale = ContentScale.Crop
+                        )
                         Spacer(Modifier.width(12.dp))
                         Column {
                             Text("TuneRide", fontWeight = FontWeight.Bold)
@@ -846,21 +848,6 @@ private fun HistoryCard(item: DownloadEntity, onDelete: () -> Unit) {
                             color = MaterialTheme.colorScheme.onSurfaceVariant
                         )
                     }
-                    Spacer(Modifier.height(5.dp))
-                    Row(verticalAlignment = Alignment.CenterVertically) {
-                        StateIcon(item.state)
-                        Spacer(Modifier.width(5.dp))
-                        Text(
-                            item.state.label(),
-                            style = MaterialTheme.typography.labelMedium,
-                            color = item.state.color()
-                        )
-                        Text(
-                            "  •  ${item.bitrate} kb/s",
-                            style = MaterialTheme.typography.labelMedium,
-                            color = MaterialTheme.colorScheme.onSurfaceVariant
-                        )
-                    }
                 }
                 if (item.state == DownloadState.COMPLETED && item.outputUri != null) {
                     IconButton(onClick = {
@@ -879,6 +866,30 @@ private fun HistoryCard(item: DownloadEntity, onDelete: () -> Unit) {
                 IconButton(onClick = onDelete) {
                     Icon(Icons.Default.DeleteOutline, "Usuń z historii")
                 }
+            }
+            Spacer(Modifier.height(10.dp))
+            Row(
+                modifier = Modifier.fillMaxWidth(),
+                verticalAlignment = Alignment.CenterVertically
+            ) {
+                StateIcon(item.state)
+                Spacer(Modifier.width(6.dp))
+                Text(
+                    item.state.label(),
+                    modifier = Modifier.weight(1f),
+                    style = MaterialTheme.typography.labelMedium,
+                    color = item.state.color(),
+                    maxLines = 1,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Spacer(Modifier.width(10.dp))
+                Text(
+                    "${item.bitrate} kb/s",
+                    style = MaterialTheme.typography.labelMedium,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant,
+                    maxLines = 1,
+                    softWrap = false
+                )
             }
             AnimatedVisibility(item.state.isActive()) {
                 Column {

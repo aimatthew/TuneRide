@@ -21,6 +21,9 @@ interface DownloadDao {
     @Query("SELECT * FROM downloads WHERE id = :id LIMIT 1")
     suspend fun get(id: String): DownloadEntity?
 
+    @Query("SELECT * FROM downloads WHERE playlistId = :playlistId ORDER BY playlistPosition ASC")
+    suspend fun getPlaylistItems(playlistId: String): List<DownloadEntity>
+
     @Query("UPDATE downloads SET title = :title, uploader = :uploader, thumbnailUrl = :thumbnail WHERE id = :id")
     suspend fun updateMetadata(id: String, title: String, uploader: String?, thumbnail: String?)
 
@@ -32,6 +35,12 @@ interface DownloadDao {
 
     @Query("UPDATE downloads SET state = 'FAILED', errorMessage = :message WHERE id = :id")
     suspend fun markFailed(id: String, message: String)
+
+    @Query("UPDATE downloads SET state = 'FAILED', errorMessage = :message WHERE id = :id AND state IN ('QUEUED', 'PREPARING', 'DOWNLOADING', 'COPYING')")
+    suspend fun cancelActiveItem(id: String, message: String)
+
+    @Query("UPDATE downloads SET state = 'FAILED', errorMessage = :message WHERE playlistId = :playlistId AND state IN ('QUEUED', 'PREPARING', 'DOWNLOADING', 'COPYING')")
+    suspend fun cancelActivePlaylist(playlistId: String, message: String)
 
     @Delete
     suspend fun delete(item: DownloadEntity)

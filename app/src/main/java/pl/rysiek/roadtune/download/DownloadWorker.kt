@@ -1,14 +1,9 @@
 package pl.rysiek.roadtune.download
 
-import android.app.NotificationChannel
-import android.app.NotificationManager
 import android.content.ContentValues
 import android.content.Context
-import android.content.pm.ServiceInfo
 import android.net.Uri
-import android.os.Build
 import android.provider.MediaStore
-import androidx.core.app.NotificationCompat
 import androidx.documentfile.provider.DocumentFile
 import androidx.work.CoroutineWorker
 import androidx.work.Data
@@ -21,7 +16,6 @@ import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
-import pl.rysiek.roadtune.R
 import pl.rysiek.roadtune.RoadTuneApplication
 import pl.rysiek.roadtune.data.DownloadState
 import java.io.File
@@ -45,6 +39,12 @@ class DownloadWorker(
     private val playlistGroupId = inputData.getString(KEY_PLAYLIST_GROUP)
     private val maxConcurrent = inputData.getInt(KEY_MAX_CONCURRENT, 1).coerceIn(1, 4)
     private val filePrefix = inputData.getString(KEY_FILE_PREFIX)
+    private val notifications = DownloadNotifications(
+        context = applicationContext,
+        dao = dao,
+        itemId = itemId,
+        playlistGroupId = playlistGroupId
+    )
 
     override suspend fun doWork(): Result = withContext(Dispatchers.IO) {
         val gate = playlistGroupId?.takeIf { it.isNotBlank() }?.let { groupId ->
@@ -65,8 +65,15 @@ class DownloadWorker(
     private suspend fun performDownload(): Result {
         if (itemId.isBlank() || sourceUrl.isBlank()) return Result.failure()
 
-        setForeground(createForegroundInfo(0, "Przygotowywanie…"))
+        var notificationItem = dao.get(itemId)
+        val initialTitle = notificationItem?.title
+            ?.takeUnless { it.startsWith("Oczekiwanie na informacje") }
+            ?: "Przygotowywanie utworu"
+        setForeground(
+            notifications.foregroundInfo(notificationItem, initialTitle, "Sprawdzanie informacji")
+        )
         dao.updateProgress(itemId, DownloadState.PREPARING, 0)
+        notifications.updatePlaylistSummary()
         val tempDirectory = File(applicationContext.cacheDir, "downloads/$itemId")
 
         return try {
@@ -80,6 +87,7 @@ class DownloadWorker(
                 val trackTitle = info.title?.trim().takeUnless { it.isNullOrBlank() }
                     ?: "Pobrany utwór"
                 dao.updateMetadata(itemId, trackTitle, info.uploader, info.thumbnail)
+                notificationItem = dao.get(itemId)
                 trackTitle
             }
 
@@ -97,27 +105,40 @@ class DownloadWorker(
                     File(
                         tempDirectory,
                         if (downloadPlaylist) {
-                            "%(playlist_index)03d - %(title).165B [%(id)s].%(ext)s"
+                            "%(title).180B.%(ext)s"
                         } else {
-                            "${filePrefix?.let { "$it - " }.orEmpty()}%(title).180B [%(id)s].%(ext)s"
+                            "%(title).180B.%(ext)s"
                         }
                     ).absolutePath
                 )
             }
 
             dao.updateProgress(itemId, DownloadState.DOWNLOADING, 0)
-            var lastDatabaseUpdate = 0L
-            YoutubeDL.getInstance().execute(request, itemId) { progress, _, line ->
+            notifications.updatePlaylistSummary()
+            var lastNotificationUpdate = 0L
+            var lastReportedPercent = -1
+            YoutubeDL.getInstance().execute(request, itemId) { progress, eta, line ->
                 val percent = progress.toInt().coerceIn(0, 99)
-                setProgressAsync(workDataOf(KEY_PROGRESS to percent, KEY_STATUS to line))
-                setForegroundAsync(createForegroundInfo(percent, title))
-
                 val now = System.currentTimeMillis()
-                if (now - lastDatabaseUpdate > 750) {
-                    lastDatabaseUpdate = now
+                val shouldUpdate = percent != lastReportedPercent &&
+                    (now - lastNotificationUpdate >= 900 || percent >= 99)
+                if (shouldUpdate) {
+                    lastNotificationUpdate = now
+                    lastReportedPercent = percent
+                    setProgressAsync(workDataOf(KEY_PROGRESS to percent, KEY_STATUS to line))
                     runBlocking {
                         dao.updateProgress(itemId, DownloadState.DOWNLOADING, percent)
+                        notifications.updatePlaylistSummary()
                     }
+                    setForegroundAsync(
+                        notifications.foregroundInfo(
+                            item = notificationItem,
+                            title = title,
+                            stage = "Pobieranie i konwersja",
+                            progress = percent.takeIf { it > 0 },
+                            etaSeconds = eta
+                        )
+                    )
                 }
             }
 
@@ -130,6 +151,10 @@ class DownloadWorker(
             }
 
             dao.updateProgress(itemId, DownloadState.COPYING, 99)
+            setForeground(
+                notifications.foregroundInfo(notificationItem, title, "Zapisywanie pliku", 99)
+            )
+            notifications.updatePlaylistSummary()
             val destinations = mp3Files.map { mp3File ->
                 if (!folderUri.isNullOrBlank()) {
                     copyToSelectedFolder(mp3File, Uri.parse(folderUri))
@@ -151,6 +176,7 @@ class DownloadWorker(
                 uri = firstDestination.uri.toString(),
                 completedAt = System.currentTimeMillis()
             )
+            notifications.updatePlaylistSummary()
             tempDirectory.deleteRecursively()
             Result.success(workDataOf(KEY_OUTPUT_URI to firstDestination.uri.toString()))
         } catch (cancelled: CancellationException) {
@@ -159,13 +185,18 @@ class DownloadWorker(
         } catch (error: Throwable) {
             val message = friendlyError(error)
             dao.markFailed(itemId, message)
+            notifications.updatePlaylistSummary()
             tempDirectory.deleteRecursively()
             Result.failure(workDataOf(KEY_ERROR to message))
         }
     }
 
     override suspend fun getForegroundInfo(): ForegroundInfo =
-        createForegroundInfo(0, "Przygotowywanie…")
+        notifications.foregroundInfo(
+            item = null,
+            title = "Przygotowywanie utworu",
+            stage = "Uruchamianie pobierania"
+        )
 
     private suspend fun updateYoutubeDlIfNeeded() {
         engineUpdateMutex.withLock {
@@ -226,33 +257,6 @@ class DownloadWorker(
             resolver.delete(uri, null, null)
             throw error
         }
-    }
-
-    private fun createForegroundInfo(progress: Int, title: String): ForegroundInfo {
-        val channelId = "roadtune_downloads"
-        val manager = applicationContext.getSystemService(NotificationManager::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            manager.createNotificationChannel(
-                NotificationChannel(
-                    channelId,
-                    applicationContext.getString(R.string.download_channel_name),
-                    NotificationManager.IMPORTANCE_LOW
-                )
-            )
-        }
-        val notification = NotificationCompat.Builder(applicationContext, channelId)
-            .setSmallIcon(android.R.drawable.stat_sys_download)
-            .setContentTitle("TuneRide")
-            .setContentText(title)
-            .setOnlyAlertOnce(true)
-            .setOngoing(true)
-            .setProgress(100, progress, progress == 0)
-            .build()
-        return ForegroundInfo(
-            itemId.hashCode() and Int.MAX_VALUE,
-            notification,
-            ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
-        )
     }
 
     private fun sanitizeFileName(value: String): String {

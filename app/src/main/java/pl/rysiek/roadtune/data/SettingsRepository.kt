@@ -9,7 +9,7 @@ import kotlinx.coroutines.flow.map
 
 private val Context.settingsDataStore by preferencesDataStore("roadtune_settings")
 
-enum class ThemeMode { LIGHT, DARK_RED }
+enum class ThemeMode { LIGHT, MIDNIGHT, DARK_RED }
 
 data class AppSettings(
     val folderUri: String? = null,

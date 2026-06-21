@@ -11,7 +11,9 @@
         android:name=".RoadTuneApplication"
         android:allowBackup="true"
         android:extractNativeLibs="true"
+        android:icon="@drawable/tuneride_icon"
         android:label="@string/app_name"
+        android:roundIcon="@drawable/tuneride_icon"
         android:supportsRtl="true"
         android:theme="@style/Theme.RoadTune">
 
@@ -30,6 +32,11 @@
                 <data android:mimeType="text/plain" />
             </intent-filter>
         </activity>
+
+        <receiver
+            android:name=".download.DownloadActionReceiver"
+            android:enabled="true"
+            android:exported="false" />
 
         <provider
             android:name="androidx.core.content.FileProvider"

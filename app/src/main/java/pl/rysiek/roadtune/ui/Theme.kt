@@ -22,6 +22,36 @@ private val LightColors = lightColorScheme(
     error = Color(0xFFBA1A1A)
 )
 
+private val MidnightColors = darkColorScheme(
+    primary = Color(0xFF7B86FF),
+    onPrimary = Color(0xFF090E42),
+    primaryContainer = Color(0xFF2B3BB8),
+    onPrimaryContainer = Color(0xFFE2E5FF),
+    secondary = Color(0xFF9D7CFF),
+    onSecondary = Color(0xFF23114E),
+    secondaryContainer = Color(0xFF45337D),
+    onSecondaryContainer = Color(0xFFE9DEFF),
+    tertiary = Color(0xFF5CB9E8),
+    onTertiary = Color(0xFF003548),
+    background = Color(0xFF0F1016),
+    onBackground = Color(0xFFF1F0F5),
+    surface = Color(0xFF191A21),
+    onSurface = Color(0xFFF1F0F5),
+    surfaceVariant = Color(0xFF292A33),
+    onSurfaceVariant = Color(0xFFC9C7D0),
+    surfaceContainerLowest = Color(0xFF0A0B10),
+    surfaceContainerLow = Color(0xFF14151B),
+    surfaceContainer = Color(0xFF1B1C23),
+    surfaceContainerHigh = Color(0xFF23242C),
+    surfaceContainerHighest = Color(0xFF2B2C35),
+    outline = Color(0xFF92919C),
+    outlineVariant = Color(0xFF464750),
+    error = Color(0xFFFFB4AB),
+    onError = Color(0xFF690005),
+    errorContainer = Color(0xFF93000A),
+    onErrorContainer = Color(0xFFFFDAD6)
+)
+
 private val DarkRedColors = darkColorScheme(
     primary = Color(0xFFFF5967),
     onPrimary = Color(0xFF3B0006),
@@ -49,8 +79,13 @@ private val DarkRedColors = darkColorScheme(
 
 @Composable
 fun RoadTuneTheme(themeMode: ThemeMode, content: @Composable () -> Unit) {
+    val colors = when (themeMode) {
+        ThemeMode.LIGHT -> LightColors
+        ThemeMode.MIDNIGHT -> MidnightColors
+        ThemeMode.DARK_RED -> DarkRedColors
+    }
     MaterialTheme(
-        colorScheme = if (themeMode == ThemeMode.DARK_RED) DarkRedColors else LightColors,
+        colorScheme = colors,
         typography = MaterialTheme.typography,
         content = content
     )
