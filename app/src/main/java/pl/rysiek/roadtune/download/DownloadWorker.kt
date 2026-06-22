@@ -17,6 +17,7 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.runBlocking
 import kotlinx.coroutines.withContext
 import pl.rysiek.roadtune.RoadTuneApplication
+import org.json.JSONObject
 import pl.rysiek.roadtune.data.DownloadState
 import java.io.File
 import java.io.FileInputStream
@@ -77,13 +78,15 @@ class DownloadWorker(
         val tempDirectory = File(applicationContext.cacheDir, "downloads/$itemId")
 
         return try {
+            tempDirectory.deleteRecursively()
             tempDirectory.mkdirs()
             updateYoutubeDlIfNeeded()
+            throwIfStopped()
 
             val title = if (downloadPlaylist) {
                 "Playlista YouTube"
             } else {
-                val info = YoutubeDL.getInstance().getInfo(sourceUrl)
+                val info = getInfoCancellable(sourceUrl)
                 val trackTitle = info.title?.trim().takeUnless { it.isNullOrBlank() }
                     ?: "Pobrany utwór"
                 dao.updateMetadata(itemId, trackTitle, info.uploader, info.thumbnail)
@@ -113,6 +116,7 @@ class DownloadWorker(
                 )
             }
 
+            throwIfStopped()
             dao.updateProgress(itemId, DownloadState.DOWNLOADING, 0)
             notifications.updatePlaylistSummary()
             var lastNotificationUpdate = 0L
@@ -141,6 +145,7 @@ class DownloadWorker(
                     )
                 }
             }
+            throwIfStopped()
 
             val mp3Files = tempDirectory.walkTopDown()
                 .filter { it.isFile && it.extension.equals("mp3", ignoreCase = true) }
@@ -197,6 +202,28 @@ class DownloadWorker(
             title = "Przygotowywanie utworu",
             stage = "Uruchamianie pobierania"
         )
+
+    private fun getInfoCancellable(url: String): TrackMetadata {
+        val request = YoutubeDLRequest(url).apply {
+            addOption("--dump-json")
+            addOption("--no-playlist")
+        }
+        val response = YoutubeDL.getInstance().execute(request, itemId)
+        val json = JSONObject(response.out)
+        return TrackMetadata(
+            title = json.optString("title").takeIf { it.isNotBlank() },
+            uploader = json.optString("uploader").takeIf { it.isNotBlank() }
+                ?: json.optString("channel").takeIf { it.isNotBlank() },
+            thumbnail = json.optString("thumbnail").takeIf { it.startsWith("http") }
+        )
+    }
+
+    private fun throwIfStopped() {
+        if (isStopped) {
+            YoutubeDL.getInstance().destroyProcessById(itemId)
+            throw CancellationException("Anulowano przez użytkownika")
+        }
+    }
 
     private suspend fun updateYoutubeDlIfNeeded() {
         engineUpdateMutex.withLock {
@@ -284,6 +311,12 @@ class DownloadWorker(
     }
 
     private data class SavedFile(val uri: Uri, val fileName: String)
+
+    private data class TrackMetadata(
+        val title: String?,
+        val uploader: String?,
+        val thumbnail: String?
+    )
 
     companion object {
         const val KEY_ID = "download_id"

@@ -17,9 +17,11 @@ import kotlinx.coroutines.flow.stateIn
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import pl.rysiek.roadtune.data.DownloadEntity
+import pl.rysiek.roadtune.data.DownloadState
 import pl.rysiek.roadtune.data.ThemeMode
 import pl.rysiek.roadtune.download.DownloadMode
 import pl.rysiek.roadtune.download.DownloadWorker
+import pl.rysiek.roadtune.download.PlaylistSelection
 import pl.rysiek.roadtune.download.PlaylistDetails
 import pl.rysiek.roadtune.download.PlaylistPrompt
 import pl.rysiek.roadtune.download.PlaylistRepository
@@ -64,6 +66,9 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
     private val _playlistPrompt = MutableStateFlow<PlaylistPrompt?>(null)
     val playlistPrompt = _playlistPrompt.asStateFlow()
 
+    private val _playlistSelection = MutableStateFlow<PlaylistSelection?>(null)
+    val playlistSelection = _playlistSelection.asStateFlow()
+
     private val _isPreparingPlaylist = MutableStateFlow(false)
     val isPreparingPlaylist = _isPreparingPlaylist.asStateFlow()
 
@@ -78,6 +83,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         if (newUrl != _url.value) {
             _previewState.value = PreviewState.Idle
             _downloadMode.value = DownloadMode.SINGLE
+            _playlistSelection.value = null
             _playlistPrompt.value = if (isYoutubePlaylist(newUrl)) {
                 PlaylistPrompt(canSelectSingleTrack = singleVideoUrl(newUrl) != null)
             } else {
@@ -96,6 +102,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _url.value = singleUrl
         _downloadMode.value = DownloadMode.SINGLE
         _playlistPrompt.value = null
+        _playlistSelection.value = null
         _previewState.value = PreviewState.Idle
     }
 
@@ -104,12 +111,14 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         _downloadMode.value = DownloadMode.PLAYLIST
         _playlistPrompt.value = null
         _previewState.value = PreviewState.Idle
+        preparePlaylistSelection(_url.value)
     }
 
     fun cancelPlaylistSelection() {
         _url.value = ""
         _downloadMode.value = DownloadMode.SINGLE
         _playlistPrompt.value = null
+        _playlistSelection.value = null
         _previewState.value = PreviewState.Idle
     }
 
@@ -175,7 +184,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
             return
         }
         if (mode == DownloadMode.PLAYLIST) {
-            prepareAndEnqueuePlaylist(cleanUrl)
+            preparePlaylistSelection(cleanUrl)
             return
         }
 
@@ -219,7 +228,7 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
         }
     }
 
-    private fun prepareAndEnqueuePlaylist(sourceUrl: String) {
+    private fun preparePlaylistSelection(sourceUrl: String) {
         if (_isPreparingPlaylist.value) return
         _isPreparingPlaylist.value = true
         viewModelScope.launch {
@@ -227,12 +236,67 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 val details = withContext(Dispatchers.IO) {
                     playlistRepository.load(sourceUrl)
                 }
-                enqueuePlaylist(details)
+                _playlistSelection.value = PlaylistSelection(
+                    details = details,
+                    selectedVideoIds = details.tracks.mapTo(linkedSetOf()) { it.videoId }
+                )
+            } catch (error: Throwable) {
+                _message.value = playlistErrorMessage(error)
+            } finally {
+                _isPreparingPlaylist.value = false
+            }
+        }
+    }
+
+    fun togglePlaylistTrack(videoId: String) {
+        val current = _playlistSelection.value ?: return
+        val selected = current.selectedVideoIds.toMutableSet()
+        if (!selected.add(videoId)) selected.remove(videoId)
+        _playlistSelection.value = current.copy(selectedVideoIds = selected)
+    }
+
+    fun selectAllPlaylistTracks() {
+        val current = _playlistSelection.value ?: return
+        _playlistSelection.value = current.copy(
+            selectedVideoIds = current.details.tracks.mapTo(linkedSetOf()) { it.videoId }
+        )
+    }
+
+    fun clearPlaylistTracks() {
+        val current = _playlistSelection.value ?: return
+        _playlistSelection.value = current.copy(selectedVideoIds = emptySet())
+    }
+
+    fun closePlaylistSelection() {
+        _playlistSelection.value = null
+    }
+
+    fun downloadSelectedPlaylist() {
+        if (_isPreparingPlaylist.value) return
+        val selection = _playlistSelection.value ?: return
+        val selectedTracks = selection.details.tracks
+            .filter { it.videoId in selection.selectedVideoIds }
+            .mapIndexed { index, track -> track.copy(position = index + 1) }
+        if (selectedTracks.isEmpty()) {
+            _message.value = "Zaznacz przynajmniej jeden utwór"
+            return
+        }
+
+        _isPreparingPlaylist.value = true
+        viewModelScope.launch {
+            try {
+                val selectedDetails = selection.details.copy(tracks = selectedTracks)
+                enqueuePlaylist(selectedDetails)
+                _playlistSelection.value = null
                 _url.value = ""
                 _previewState.value = PreviewState.Idle
                 _downloadMode.value = DownloadMode.SINGLE
                 _playlistPrompt.value = null
-                _message.value = "Dodano ${details.tracks.size} utworów do kolejki"
+                _message.value = if (selectedTracks.size == selection.details.tracks.size) {
+                    "Dodano całą playlistę: ${selectedTracks.size} utworów"
+                } else {
+                    "Dodano ${selectedTracks.size} wybranych utworów"
+                }
             } catch (error: Throwable) {
                 _message.value = playlistErrorMessage(error)
             } finally {
@@ -296,6 +360,38 @@ class MainViewModel(application: Application) : AndroidViewModel(application) {
                 workManager.cancelAllWorkByTag(item.id)
             }
             dao.delete(item)
+        }
+    }
+
+    fun retryDownload(item: DownloadEntity) {
+        if (item.state != DownloadState.FAILED) return
+        val currentSettings = settings.value
+        val requestBuilder = OneTimeWorkRequestBuilder<DownloadWorker>()
+            .setInputData(
+                DownloadWorker.input(
+                    id = item.id,
+                    url = item.sourceUrl,
+                    bitrate = item.bitrate,
+                    folderUri = currentSettings.folderUri,
+                    downloadPlaylist = false,
+                    playlistGroupId = item.playlistId,
+                    maxConcurrent = currentSettings.maxConcurrentDownloads,
+                    filePrefix = null
+                )
+            )
+            .setConstraints(
+                Constraints.Builder()
+                    .setRequiredNetworkType(NetworkType.CONNECTED)
+                    .build()
+            )
+            .addTag(item.id)
+        item.playlistId?.let { requestBuilder.addTag("playlist:$it") }
+        val request = requestBuilder.build()
+
+        viewModelScope.launch {
+            dao.prepareRetry(item.id, System.currentTimeMillis())
+            workManager.enqueue(request)
+            _message.value = "Ponowiono pobieranie: ${item.title}"
         }
     }
 

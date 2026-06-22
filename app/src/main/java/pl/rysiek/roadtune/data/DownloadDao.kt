@@ -42,6 +42,9 @@ interface DownloadDao {
     @Query("UPDATE downloads SET state = 'FAILED', errorMessage = :message WHERE playlistId = :playlistId AND state IN ('QUEUED', 'PREPARING', 'DOWNLOADING', 'COPYING')")
     suspend fun cancelActivePlaylist(playlistId: String, message: String)
 
+    @Query("UPDATE downloads SET state = 'QUEUED', progress = 0, errorMessage = NULL, outputFileName = NULL, outputUri = NULL, completedAt = NULL, createdAt = :createdAt WHERE id = :id AND state = 'FAILED'")
+    suspend fun prepareRetry(id: String, createdAt: Long)
+
     @Delete
     suspend fun delete(item: DownloadEntity)
 

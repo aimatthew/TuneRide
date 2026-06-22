@@ -5,6 +5,7 @@ import android.app.NotificationManager
 import android.app.PendingIntent
 import android.content.Context
 import android.content.Intent
+import android.graphics.BitmapFactory
 import android.content.pm.ServiceInfo
 import android.graphics.Color
 import android.os.Build
@@ -23,6 +24,9 @@ class DownloadNotifications(
     private val playlistGroupId: String?
 ) {
     private val manager = context.getSystemService(NotificationManager::class.java)
+    private val largeIcon by lazy {
+        BitmapFactory.decodeResource(context.resources, R.drawable.tuneride_icon)
+    }
 
     fun foregroundInfo(
         item: DownloadEntity?,
@@ -47,6 +51,7 @@ class DownloadNotifications(
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification_music)
+            .setLargeIcon(largeIcon)
             .setColor(BRAND_COLOR)
             .setContentTitle(displayTitle)
             .setContentText(details)
@@ -69,7 +74,7 @@ class DownloadNotifications(
                 addAction(
                     R.drawable.ic_notification_music,
                     "Anuluj",
-                    cancelIntent()
+                    cancelItemIntent()
                 )
             }
             .build()
@@ -126,6 +131,7 @@ class DownloadNotifications(
 
         val notification = NotificationCompat.Builder(context, CHANNEL_ID)
             .setSmallIcon(R.drawable.ic_notification_music)
+            .setLargeIcon(largeIcon)
             .setColor(BRAND_COLOR)
             .setContentTitle(playlistTitle)
             .setContentText(summaryText)
@@ -152,7 +158,7 @@ class DownloadNotifications(
                     addAction(
                         R.drawable.ic_notification_music,
                         "Anuluj",
-                        cancelIntent()
+                        cancelPlaylistIntent(groupId)
                     )
                 }
             }
@@ -173,10 +179,9 @@ class DownloadNotifications(
         )
     }
 
-    private fun cancelIntent(): PendingIntent {
-        val workTag = playlistGroupId?.let { "playlist:$it" } ?: itemId
+    private fun cancelItemIntent(): PendingIntent {
         val intent = Intent(context, DownloadActionReceiver::class.java).apply {
-            putExtra(DownloadActionReceiver.EXTRA_WORK_TAG, workTag)
+            action = DownloadActionReceiver.ACTION_CANCEL_ITEM
             putExtra(DownloadActionReceiver.EXTRA_ITEM_ID, itemId)
             putExtra(DownloadActionReceiver.EXTRA_PLAYLIST_ID, playlistGroupId)
         }
@@ -188,7 +193,20 @@ class DownloadNotifications(
         )
     }
 
-    private fun childNotificationId(): Int = itemId.hashCode() and Int.MAX_VALUE
+    private fun cancelPlaylistIntent(groupId: String): PendingIntent {
+        val intent = Intent(context, DownloadActionReceiver::class.java).apply {
+            action = DownloadActionReceiver.ACTION_CANCEL_PLAYLIST
+            putExtra(DownloadActionReceiver.EXTRA_PLAYLIST_ID, groupId)
+        }
+        return PendingIntent.getBroadcast(
+            context,
+            (summaryNotificationId(groupId) xor 0x2A00) and Int.MAX_VALUE,
+            intent,
+            PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
+        )
+    }
+
+    private fun childNotificationId(): Int = itemNotificationId(itemId)
 
     private fun ensureChannel() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
@@ -228,6 +246,9 @@ class DownloadNotifications(
         private val BRAND_COLOR = Color.rgb(255, 89, 103)
 
         fun groupKey(playlistId: String): String = "tuneride_playlist_$playlistId"
+
+        fun itemNotificationId(itemId: String): Int =
+            itemId.hashCode() and Int.MAX_VALUE
 
         fun summaryNotificationId(playlistId: String): Int =
             (playlistId.hashCode() xor 0x5A17) and Int.MAX_VALUE

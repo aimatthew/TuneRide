@@ -8,3 +8,8 @@ enum class DownloadMode {
 data class PlaylistPrompt(
     val canSelectSingleTrack: Boolean
 )
+
+data class PlaylistSelection(
+    val details: PlaylistDetails,
+    val selectedVideoIds: Set<String>
+)

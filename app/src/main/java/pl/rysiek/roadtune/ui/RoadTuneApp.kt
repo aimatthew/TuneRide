@@ -16,6 +16,7 @@ import androidx.compose.foundation.layout.Row
 import androidx.compose.foundation.layout.Spacer
 import androidx.compose.foundation.layout.fillMaxSize
 import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.heightIn
 import androidx.compose.foundation.layout.height
 import androidx.compose.foundation.layout.padding
 import androidx.compose.foundation.layout.size
@@ -36,11 +37,13 @@ import androidx.compose.material.icons.filled.Headphones
 import androidx.compose.material.icons.filled.LibraryMusic
 import androidx.compose.material.icons.filled.MoreVert
 import androidx.compose.material.icons.filled.MusicNote
+import androidx.compose.material.icons.filled.Refresh
 import androidx.compose.material.icons.filled.OpenInNew
 import androidx.compose.material.icons.filled.Schedule
 import androidx.compose.material.icons.filled.Settings
 import androidx.compose.material3.AlertDialog
 import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
 import androidx.compose.material3.Card
 import androidx.compose.material3.CardDefaults
 import androidx.compose.material3.CircularProgressIndicator
@@ -85,6 +88,7 @@ import pl.rysiek.roadtune.MainViewModel
 import pl.rysiek.roadtune.R
 import pl.rysiek.roadtune.data.AppSettings
 import pl.rysiek.roadtune.data.DownloadEntity
+import pl.rysiek.roadtune.download.PlaylistSelection
 import pl.rysiek.roadtune.data.DownloadState
 import pl.rysiek.roadtune.download.DownloadMode
 import pl.rysiek.roadtune.download.PlaylistPrompt
@@ -106,6 +110,7 @@ fun RoadTuneApp(viewModel: MainViewModel) {
     val downloadMode by viewModel.downloadMode.collectAsStateWithLifecycle()
     val playlistPrompt by viewModel.playlistPrompt.collectAsStateWithLifecycle()
     val isPreparingPlaylist by viewModel.isPreparingPlaylist.collectAsStateWithLifecycle()
+    val playlistSelection by viewModel.playlistSelection.collectAsStateWithLifecycle()
     val message by viewModel.message.collectAsStateWithLifecycle()
     val updateState by viewModel.updateState.collectAsStateWithLifecycle()
     val openUpdates by viewModel.openUpdates.collectAsStateWithLifecycle()
@@ -132,6 +137,18 @@ fun RoadTuneApp(viewModel: MainViewModel) {
             onSingleTrack = viewModel::selectSingleTrack,
             onWholePlaylist = viewModel::selectWholePlaylist,
             onCancel = viewModel::cancelPlaylistSelection
+        )
+    }
+
+    playlistSelection?.let {
+        PlaylistSelectionDialog(
+            selection = it,
+            isPreparing = isPreparingPlaylist,
+            onToggle = viewModel::togglePlaylistTrack,
+            onSelectAll = viewModel::selectAllPlaylistTracks,
+            onClearAll = viewModel::clearPlaylistTracks,
+            onDownload = viewModel::downloadSelectedPlaylist,
+            onCancel = viewModel::closePlaylistSelection
         )
     }
 
@@ -208,6 +225,7 @@ fun RoadTuneApp(viewModel: MainViewModel) {
                 padding = padding,
                 items = history,
                 onDelete = viewModel::deleteHistory,
+                onRetry = viewModel::retryDownload,
                 onClear = viewModel::clearHistory
             )
 
@@ -362,7 +380,7 @@ private fun DownloadScreen(
                             if (isPreparingPlaylist) {
                                 "Odczytuję utwory i miniatury…"
                             } else if (downloadMode == DownloadMode.PLAYLIST) {
-                                "Pobierz całą playlistę jako MP3"
+                                "Wybierz utwory z playlisty"
                             } else {
                                 "Pobierz jako MP3"
                             },
@@ -436,7 +454,7 @@ private fun PlaylistChoiceDialog(
         },
         confirmButton = {
             Button(onClick = onWholePlaylist) {
-                Text("Cała playlista")
+                Text("Wybierz z playlisty")
             }
         },
         dismissButton = {
@@ -445,6 +463,137 @@ private fun PlaylistChoiceDialog(
                 if (prompt.canSelectSingleTrack) {
                     TextButton(onClick = onSingleTrack) { Text("Tylko ten utwór") }
                 }
+            }
+        }
+    )
+}
+
+@Composable
+private fun PlaylistSelectionDialog(
+    selection: PlaylistSelection,
+    isPreparing: Boolean,
+    onToggle: (String) -> Unit,
+    onSelectAll: () -> Unit,
+    onClearAll: () -> Unit,
+    onDownload: () -> Unit,
+    onCancel: () -> Unit
+) {
+    val tracks = selection.details.tracks
+    val selectedCount = selection.selectedVideoIds.size
+    val allSelected = selectedCount == tracks.size
+
+    AlertDialog(
+        onDismissRequest = { if (!isPreparing) onCancel() },
+        title = {
+            Column {
+                Text(
+                    selection.details.title,
+                    maxLines = 2,
+                    overflow = TextOverflow.Ellipsis
+                )
+                Text(
+                    "$selectedCount z ${tracks.size} zaznaczonych",
+                    style = MaterialTheme.typography.bodySmall,
+                    color = MaterialTheme.colorScheme.onSurfaceVariant
+                )
+            }
+        },
+        text = {
+            Column {
+                TextButton(
+                    onClick = if (allSelected) onClearAll else onSelectAll,
+                    enabled = !isPreparing
+                ) {
+                    Text(if (allSelected) "Odznacz wszystkie" else "Zaznacz wszystkie")
+                }
+                HorizontalDivider()
+                LazyColumn(
+                    modifier = Modifier
+                        .fillMaxWidth()
+                        .heightIn(max = 430.dp),
+                    verticalArrangement = Arrangement.spacedBy(4.dp)
+                ) {
+                    items(tracks, key = { it.videoId }) { track ->
+                        val selected = track.videoId in selection.selectedVideoIds
+                        Row(
+                            modifier = Modifier
+                                .fillMaxWidth()
+                                .clip(RoundedCornerShape(12.dp))
+                                .clickable(enabled = !isPreparing) {
+                                    onToggle(track.videoId)
+                                }
+                                .padding(vertical = 7.dp, horizontal = 4.dp),
+                            verticalAlignment = Alignment.CenterVertically
+                        ) {
+                            Checkbox(
+                                checked = selected,
+                                onCheckedChange = { onToggle(track.videoId) },
+                                enabled = !isPreparing
+                            )
+                            if (!track.thumbnailUrl.isNullOrBlank()) {
+                                AsyncImage(
+                                    model = track.thumbnailUrl,
+                                    contentDescription = null,
+                                    contentScale = ContentScale.Crop,
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                )
+                            } else {
+                                Box(
+                                    modifier = Modifier
+                                        .size(52.dp)
+                                        .clip(RoundedCornerShape(10.dp))
+                                        .background(MaterialTheme.colorScheme.primaryContainer),
+                                    contentAlignment = Alignment.Center
+                                ) {
+                                    Icon(
+                                        Icons.Default.MusicNote,
+                                        contentDescription = null,
+                                        tint = MaterialTheme.colorScheme.primary
+                                    )
+                                }
+                            }
+                            Spacer(Modifier.width(10.dp))
+                            Column(Modifier.weight(1f)) {
+                                Text(
+                                    "${track.position}. ${track.title}",
+                                    fontWeight = FontWeight.SemiBold,
+                                    maxLines = 2,
+                                    overflow = TextOverflow.Ellipsis
+                                )
+                                track.uploader?.let {
+                                    Text(
+                                        it,
+                                        style = MaterialTheme.typography.bodySmall,
+                                        color = MaterialTheme.colorScheme.onSurfaceVariant,
+                                        maxLines = 1,
+                                        overflow = TextOverflow.Ellipsis
+                                    )
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        },
+        confirmButton = {
+            Button(
+                onClick = onDownload,
+                enabled = selectedCount > 0 && !isPreparing
+            ) {
+                Text(
+                    if (allSelected) {
+                        "Pobierz całość ($selectedCount)"
+                    } else {
+                        "Pobierz wybrane ($selectedCount)"
+                    }
+                )
+            }
+        },
+        dismissButton = {
+            TextButton(onClick = onCancel, enabled = !isPreparing) {
+                Text("Wróć")
             }
         }
     )
@@ -735,6 +884,7 @@ private fun HistoryScreen(
     padding: PaddingValues,
     items: List<DownloadEntity>,
     onDelete: (DownloadEntity) -> Unit,
+    onRetry: (DownloadEntity) -> Unit,
     onClear: () -> Unit
 ) {
     if (items.isEmpty()) {
@@ -797,13 +947,17 @@ private fun HistoryScreen(
             }
         }
         items(items, key = { it.id }) { item ->
-            HistoryCard(item = item, onDelete = { onDelete(item) })
+            HistoryCard(item = item, onDelete = { onDelete(item) }, onRetry = { onRetry(item) })
         }
     }
 }
 
 @Composable
-private fun HistoryCard(item: DownloadEntity, onDelete: () -> Unit) {
+private fun HistoryCard(
+    item: DownloadEntity,
+    onDelete: () -> Unit,
+    onRetry: () -> Unit
+) {
     val context = LocalContext.current
     Card(
         shape = RoundedCornerShape(20.dp),
@@ -912,8 +1066,8 @@ private fun HistoryCard(item: DownloadEntity, onDelete: () -> Unit) {
                     overflow = TextOverflow.Ellipsis
                 )
             }
-            Spacer(Modifier.height(8.dp))
-            Row(verticalAlignment = Alignment.CenterVertically) {
+            Spacer(Modifier.height(6.dp))
+            Row(modifier = Modifier.fillMaxWidth(), verticalAlignment = Alignment.CenterVertically) {
                 Icon(
                     Icons.Default.Schedule,
                     null,
@@ -935,6 +1089,31 @@ private fun HistoryCard(item: DownloadEntity, onDelete: () -> Unit) {
                         maxLines = 1,
                         overflow = TextOverflow.Ellipsis
                     )
+                }
+                if (item.outputFileName == null) {
+                    Spacer(Modifier.weight(1f))
+                }
+                if (item.state == DownloadState.FAILED) {
+                    Row(
+                        modifier = Modifier
+                            .clip(RoundedCornerShape(8.dp))
+                            .clickable(onClick = onRetry)
+                            .padding(horizontal = 6.dp, vertical = 3.dp),
+                        verticalAlignment = Alignment.CenterVertically
+                    ) {
+                        Icon(
+                            Icons.Default.Refresh,
+                            contentDescription = null,
+                            modifier = Modifier.size(13.dp),
+                            tint = MaterialTheme.colorScheme.primary
+                        )
+                        Spacer(Modifier.width(3.dp))
+                        Text(
+                            "Ponów",
+                            style = MaterialTheme.typography.labelSmall,
+                            color = MaterialTheme.colorScheme.primary
+                        )
+                    }
                 }
             }
         }
